@@ -1,0 +1,194 @@
+from typing import final
+from google.colab import drive
+drive.mount('/content/drive')
+
+#!pip install -U -q PyDrive
+#!pip install pytesseract
+##!apt-get install -y tesseract-ocr
+#!pip install opencv-python-headless
+#!pip install imutils
+
+# Importar las librerías
+import pytesseract
+import cv2
+import numpy as np
+import imutils
+from matplotlib import pyplot as plt
+from pydrive.auth import GoogleAuth
+from pydrive.drive import GoogleDrive
+from google.colab import auth
+from oauth2client.client import GoogleCredentials
+import cv2
+import time
+from PIL import Image
+import matplotlib.pyplot as plt
+from IPython.display import clear_output
+
+# Autenticar y crear el cliente PyDrive.
+auth.authenticate_user()
+gauth = GoogleAuth()
+gauth.credentials = GoogleCredentials.get_application_default()
+drive = GoogleDrive(gauth)
+
+# Reemplaza con el ID de tu carpeta en Google Drive
+folder_id = '1aTNk9JBxQwQWSK1ztetTaW81j_-UOVcl'
+lectura_anterior = 0
+while True:
+    # Listar archivos en la carpeta
+    file_list = drive.ListFile({'q': f"'{folder_id}' in parents and trashed=false"}).GetList()
+
+    # Opcional: Ordenar archivos por fecha de creación
+    file_list.sort(key=lambda x: x['createdDate'], reverse=True)
+
+    # Seleccionar el archivo más reciente
+    if file_list:
+        selected_file = file_list[0]  # El archivo más reciente
+
+        # Mostrar información del archivo seleccionado
+        print(f'Selected file: {selected_file["title"]}')
+        print(f'File ID: {selected_file["id"]}')
+
+        # Descargar el archivo
+        file_id = selected_file['id']
+        downloaded_file = drive.CreateFile({'id': file_id})
+        downloaded_file.GetContentFile('downloaded_image.jpg')
+
+        # Cargar la imagen en Colab
+        # Abrir la imagen usando PIL
+        image = Image.open('downloaded_image.jpg')
+
+        # Mostrar la imagen
+        plt.imshow(image)
+        plt.axis('off')
+        plt.show()
+
+        image = '/content/downloaded_image.jpg'  # Cambia esta ruta por la de tu imagen
+
+        # Cargar la imagen
+        img = cv2.imread(image)
+
+        # Verificar si la imagen se cargó correctamente
+        if img is None:
+            raise FileNotFoundError("La imagen no se encontró en la ruta especificada.")
+
+        # Definir la región de recorte (left, upper, right, lower)
+        left = 50
+        upper = 100
+        right = 1000
+        lower = 400
+
+        # Recortar la imagen
+        cropped_img = img[upper:lower, left:right]
+
+        # Convertir a escala de grises
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
+        # Binarizar la imagen
+        threshold_img = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
+
+        # Mostrar la imagen binarizada
+        plt.imshow(threshold_img, cmap='gray')
+        plt.title('Otsu')
+        plt.show()
+
+        umbral = 85
+
+        # Calculamos y normalizamos la transformada de distancia
+        dist = cv2.distanceTransform(threshold_img, cv2.DIST_L2, 5)
+        dist = cv2.normalize(dist, dist, 0, 5, cv2.NORM_MINMAX)
+        dist = (dist * 255).astype('uint8')
+
+        # Mostrar la transformada de distancia
+        plt.imshow(dist, cmap='gray')
+        plt.title('Dist')
+        plt.show()
+
+        dist = np.uint8((threshold_img < umbral) * 255)
+
+        # Mostrar la imagen umbralizada
+        plt.imshow(dist, cmap='gray')
+        plt.title('Umbralizada')
+        plt.show()
+
+        # Aplicamos thresholding al resultado de la operación anterior
+        dist = cv2.threshold(dist, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
+
+        # Mostrar la imagen con el thresholding aplicado
+        plt.imshow(dist, cmap='gray')
+        plt.title('Dist Otsu')
+        plt.show()
+
+        # Hallamos los contornos de los números en la imagen
+        contours = cv2.findContours(dist.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        contours = imutils.grab_contours(contours)
+
+        chars = []
+        for contour in contours:
+            x, y, w, h = cv2.boundingRect(contour)
+            # Solo los contornos grandes perdurarán, ya que corresponden a los números que nos interesan
+            if w >= 35 and h >= 100:
+                chars.append(contour)
+
+        # Verificamos si se encontraron contornos
+        if chars:
+            # Hallamos la cáscara convexa que envuelve todos los números
+            chars = np.vstack([chars[i] for i in range(0, len(chars))])
+            hull = cv2.convexHull(chars)
+
+            # Creamos una máscara y la alargamos
+            mask = np.zeros(cropped_img.shape[:2], dtype='uint8')
+            cv2.drawContours(mask, [hull], -1, 255, -1)
+            mask = cv2.dilate(mask, None, iterations=2)
+
+            # Aplicamos la máscara para aislar los números del fondo
+            final = cv2.bitwise_and(dist, dist, mask=mask)
+            kernel =np.ones((5, 5),np.uint8)
+            opening = cv2.erode(final, kernel, iterations=3)
+            dila = cv2.dilate(opening, kernel, iterations=3)
+            #cv2.imshow('Apertura', opening)
+            #cv2.imshow('Apertura2', dila)
+            plt.imshow(dila, cmap='gray')
+            plt.title('Final dila')
+            plt.show()
+            # Mostrar la imagen final
+            plt.imshow(dist, cmap='gray')
+            plt.title('Final')
+            plt.show()
+
+            # Extraemos los dígitos de la imagen, con un whitelist de sólo números
+            options = '-c tessedit_char_whitelist=0123456789'
+
+            # Procesar la imagen con Pytesseract
+            text = pytesseract.image_to_string(final, config=options)
+            print("Números extraídos:", text.strip())
+            def calcular_recibo_gas(lectura_actual, lectura_anterior, valor_m3, cargo_fijo):
+                consumo = lectura_actual - lectura_anterior  # Calcular el consumo
+                consumocorregido = consumo * 0.783  # Aplicar el factor de corrección
+                costo_recibo = consumocorregido * valor_m3  # Calcular el costo del recibo sin el cargo fijo
+                costo_total = costo_recibo + cargo_fijo  # Sumar el cargo fijo al costo del recibo
+                return costo_total
+
+
+  # Valor del metro cúbico de gas y cargo fijo
+                valor_m3 = 3575.59#valor establecido en el recibo
+                cargo_fijo = 4316.58#valor municipal establecido en el recibo
+                #lectura_anterior = 0#valor anterior inicial que se actualiza
+
+                print(lectura_anterior)
+  #while True:
+      #lectura_actual = float(input("Ingrese la lectura actual del medidor de gas: "))
+
+                recibo_gas = calcular_recibo_gas(lectura_actual, lectura_anterior, valor_m3,cargo_fijo)  # Calcular el recibo del gas
+
+                print("El valor del recibo del gas es:", recibo_gas,"pesos")
+
+                lectura_anterior = lectura_actual  # Hacer que la lectura actual sea la nueva lectura anterior
+                print(lectura_anterior)
+        else:
+            print("No se encontraron contornos que cumplan con las condiciones especificadas.")
+    else:
+        print("No files found in the folder.")
+
+    # Pausar por 2 minutos antes de la siguiente iteración
+    time.sleep(120)
+    clear_output(wait=True)
